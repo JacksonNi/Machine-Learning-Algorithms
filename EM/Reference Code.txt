@@ -1,0 +1,197 @@
+%http://www.cs.tut.fi/~tohkaj/matlab_code/emclustering.m
+
+% To solve the singular problem in EM algorithm, I set the threshold based on this code,
+% But the final result still depends.
+
+
+% The EM-algorithm for clustering based on Gaussian mixture models.
+% Copyright (c) 2002 - 2003 Jussi Tohka
+% Institute of Signal Processing
+% Tampere University of Technology 
+% Finland
+% P.O. Box 553 FIN-33101
+% jussi.tohka@tut.fi
+% ----------------------------------------------------------------
+% Permission to use, copy, modify, and distribute this software 
+% for any purpose and without fee is hereby
+% granted, provided that the above copyright notice appear in all
+% copies.  The author and Tampere University of Technology make no representations
+% about the suitability of this software for any purpose.  It is
+% provided "as is" without express or implied warranty.
+
+% Version 1.1. A hack that prevents singular covariance matrices
+% from appearing has been added. It is simply based on detecting
+% singular covariance matrices and adding a constant matrix(i.e a
+% diagonal matrix which has a constant-valued diagonal) to singular 
+% covariance matrices. This way covariance matrices can be made
+% non-singular without changing them too much and without
+% destroying positive definiteness or symmetry.
+
+
+% [mu,sigma,prob,labels] = emclustering(data,k,maxiter,mu,sigma,prob)
+% 
+% INPUT
+% data: data points as n x m matrix where n is the number of
+% datapoints and m is their dimension, an error will be declared if 
+% n < m, i.e the matrix data is "high".
+%
+% k : the number of clusters
+%
+% maxiter : maximum number of iterations (default 50)
+%
+% mu: initial cluster centres, as m x k matrix (optional, you can also
+% give an empty matrix if you want to specify sigma or prob)
+%
+% sigma: initial covariance matrices, as m x m x k matrix, or as
+% one m x m matrix when the same initial covariance matrix is used
+% for each class (optional).
+%
+% prob: initial a-priori probabilities for each class (optional)
+% 
+% OUTPUT:
+% mu : final cluster centres
+% sigma: final covariances 
+% prob: final probabilities
+% labels: labeling of the datapoints based on Bayesian classifier
+% with parameters from clustering.
+
+
+function [mu,sigma,prob,labels] = emclustering(data,k,varargin);
+  
+   datasize = size(data);
+   n = datasize(1);
+   m = datasize(2);
+   if n < m
+     fprintf(1,'Error: The number of datapoints must be greater than \n');
+     fprintf(1,'their dimension. \n');
+     return;
+   end
+  
+   if length(varargin) > 0
+     max_iter = varargin{1};
+   else
+     max_iter = 50;
+   end
+     
+   if length(varargin) > 1
+     if isempty(varargin{2})
+       mu = zeros(m,k);
+       for i = 0:k - 1
+         mu(:,i + 1) = min(data)' + ((i + 1)/(k + 1))*(max(data) - min(data))';
+       end
+     else
+       mu = varargin{2};
+     end
+   else
+     mu = zeros(m,k);
+     for i = 0:k - 1
+       mu(:,i + 1) =  min(data)' + ((i + 1)/(k + 1))*(max(data) - min(data))';
+     end
+   end
+   mu
+   if length(varargin) > 2
+     if ndims(varargin{3}) == 3
+       sigma = varargin{3};
+       
+     elseif ndims(varargin{3}) == 2 & ~isempty(varargin{3})
+       sigma = repmat(varargin{3},[1 1 k]);
+     else
+       sigma = repmat(diag(var(data))*((1/k)^2),[1 1 k]);
+     end
+   else
+     sigma = repmat(diag(var(data))*((1/k)^2),[1 1 k]);
+   end
+   if length(varargin) > 3
+     prob = varargin{4};
+   else
+     prob = repmat((1/k),k,1);
+   end  
+   iter = 0;
+   changed = 1;
+   p = zeros(n,k);
+   very_small = mean(std(data))*(1/k)*0.0001
+   while (iter < max_iter) & changed
+     fprintf(1,'#');
+     iter = iter + 1;
+     old_prob = prob;
+     old_mu = mu;
+     old_sigma = sigma;
+     old_p = p;
+     % calculate the probability of the data point i belonging the
+     % class j for each datapoint and class (or cluster). This is
+     % the E-step
+    
+     for i = 1:k
+       tol = m*norm(squeeze(sigma(:,:,i)))*eps*4;
+       corank = rank(squeeze(sigma(:,:,i)),tol);
+       d = det(squeeze(sigma(:,:,i)));
+       if corank == m & d > very_small        % the rank is full so 
+                                              % proceed normally
+         invsigma = inv(squeeze(sigma(:,:,i)));
+	 
+       else                                   % the rank is not
+                                              % full so a little
+                                              % hack is needed
+         fprintf(1,'s');
+	 sigma(:,:,i) = squeeze(sigma(:,:,i)) + eye(m)*3*max(tol,very_small);
+	 
+         invsigma = inv(squeeze(sigma(:,:,i)));
+	 d = det(squeeze(sigma(:,:,i)));
+       end
+       
+       dist = data - repmat(mu(:,i)',n,1);
+       %if iter > 11
+       %   keyboard;
+       %end;
+      % p(:,i) = ...
+% (1/((2*pi)^(m/2)*sqrt(d)))*exp(-0.5*(sum((dist*invsigma).*dist,2)))*prob(i);
+       p(:,i) = ...
+              (1/sqrt(d))*exp(-0.5*(sum((dist*invsigma).*dist,2)))*prob(i);
+     end
+     
+     % normalization of probalities
+     nf = sum(p,2);
+     nf2 = nf.*(nf > 0) + (nf == 0);
+     p = p./repmat(nf2,1,k);
+     p(find(nf == 0),:) = 1/k;
+     % Then the M-step, i.e. computing the new values of parameters
+     % for each cluster
+     for i = 1:k
+       prob(i) = mean(p(:,i));
+       mu(:,i) = (sum(repmat(p(:,i),1,m).*data)/(n*prob(i)))';
+       dist = data - repmat(mu(:,i)',n,1);
+       sigma(:,:,i) = (repmat(p(:,i),1,m).*dist)'*dist/(n*prob(i));
+     end
+     changes = sum(sum(abs(p - old_p)))/(n*k); 
+     changed = changes > 0.001;
+     
+   end
+   for i = 1:k
+    
+     tol = m*norm(squeeze(sigma(:,:,i)))*eps*4;
+     corank = rank(squeeze(sigma(:,:,i)),tol);
+     d = det(squeeze(sigma(:,:,i)));
+     if corank == m  & d > very_small         % the rank is full so 
+                                              % proceed normally
+       invsigma = inv(squeeze(sigma(:,:,i)));
+      
+     else                                   % the rank is not
+                                              % full so a little
+                                            % hack is needed
+       sigma(:,:,i) = sigma(:,:,i) + eye(m)*max(very_small,tol)*3;
+
+       invsigma = real(inv(squeeze(sigma(:,:,i))));
+       d = det(squeeze(sigma(:,:,i)));
+     end
+     
+     dist = data - repmat(mu(:,i)',n,1);
+     p(:,i) = ...
+	   (1/((2*pi)^(m/2)*sqrt(d)))*exp(-0.5*(sum((dist*invsigma).*dist,2)))*prob(i);
+   end
+   % normalization of probabilities
+   nf = sum(p,2);
+   p = p./repmat(nf,1,k);
+   [tmp labels] = max(p,[],2);
+   fprintf(1,'\n');
+
+
